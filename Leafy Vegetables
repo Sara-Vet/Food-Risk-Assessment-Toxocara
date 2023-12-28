@@ -1,0 +1,219 @@
+Model.R
+#################
+library(rstudioapi)
+library(runjags)
+setwd(dirname(getActiveDocumentContext()$path)) #set file location as working directory
+source("SimulateInfectionFunction.R")
+## Recover the Cq distribution
+
+dtfarm <- read.csv("CqReferenceField.csv")
+
+RefCt <- c(dtfarm$Cq1,dtfarm$Cq2)
+RefCt[is.na(RefCt)] <- 39 ## Make NAs 39
+RefCt[RefCt > 39] <- 39 ## Make above 39 39
+
+nRepeats <- 2000
+
+rsInf <- sapply(1:nRepeats,function(x){
+  N <- 1000 # to get probability of infection
+  
+  ## Ct value for each spinach
+  CtvalSpinach <- RefCt[sample.int(length(RefCt),N, replace = T)]
+  
+  ## Compute # of eggs & infectious Eggs
+  ## here we put the spike data stuff
+  nInf <- sapply(CtvalSpinach,getNInf)
+  nInfVeg <- ifelse(nInf <= 0, "negative", "positive")
+
+  
+  ## Compute prob of infect humans
+  ## Using exponential dose-response
+  nInfHumans <- rbinom(nInf,1,1-exp(-opres$par*nInf)) 
+  return(c(sum(nInf),sum(nInfHumans)))
+})
+
+save.image("FinalResults.RData")
+
+SimulateInfectionFunction.R
+library(rstudioapi)
+setwd(dirname(getActiveDocumentContext()$path)) #set file location as working directory
+load("SpikedResults.RData")
+
+
+set.seed(1)
+
+Cq0 <- c(NoiseSpiked$mcmc[[1]][,"Cq0"],NoiseSpiked$mcmc[[2]][,"Cq0"])
+k <- c(NoiseSpiked$mcmc[[1]][,"k"],NoiseSpiked$mcmc[[2]][,"k"])
+x0 <- c(NoiseSpiked$mcmc[[1]][,"x0"],NoiseSpiked$mcmc[[2]][,"x0"])
+n <- length(Cq0) #number of samples
+
+x <- 1:200
+
+## Generating the logistic curves
+LogC <- sapply(1:n,function(y){
+  (39-Cq0[y]) / (1 + exp(k[y]*(x-x0[y]))) + Cq0[y]
+})
+
+## Load up larvated egg data
+larvaedt <- read.csv("LarvatedEggsCqData.csv")
+
+getNInf <- function(fieldval){
+  if(fieldval<39){
+    ## Generate my two ref Cq vals for larvae
+    refCqL <- rnorm(nrow(larvaedt),mean=larvaedt$Mean.Cq,sd=larvaedt$SD..triplicate.)
+    
+    ## Sample the values for the red curve that we are going to compare
+    Pos <- sample.int(n,1)
+    compCqEgg <- LogC[larvaedt$No..larvated.eggs,Pos]
+    
+    ## The shift is simply the average difference between both
+    shift <- mean(compCqEgg-refCqL)
+    
+    ## Calculate squared errors
+    ## first 200 are eggs, 201-400 are the larvated eggs
+    errors <- c((LogC[,Pos]-fieldval)^2,
+                (LogC[,Pos]-shift-fieldval)^2)
+    
+    ## Keep only 25 out of the 400 options (up to 200 eggs and 200 larvated eggs)
+    prop<-25/400
+    th <- quantile(errors,probs=prop)
+    errors[errors>th] <- NA
+    
+    weight<-(1/th)*(1-(errors/th)^2)
+    weight[is.na(weight)] <- 0
+    
+    nEggs <- sample.int(400,1,prob = weight, replace = T)
+    return(ifelse(nEggs>200,nEggs-200,0))
+  } else{
+    return(0)
+  }
+  
+}
+
+doserespdt <- read.csv("DoseResponseMiceData.csv")
+
+doseResponseModel <- function(rate){
+  sum((doserespdt$X..infected.1/100 - (1 - exp(-rate*doserespdt$Dose..eggs.)))^2)
+}
+
+opres <- optim(c(0.5),doseResponseModel, method = "Brent", lower = 0, upper = 1)
+
+### Spiked Data model
+### By JM Prada
+
+## Load data and set working directory
+library(rstudioapi)
+library(runjags)
+runjags.options(jagspath="C:/Users/sh00835/AppData/Local/Programs/JAGS/JAGS-4.3.1/x64/bin")
+
+setwd(dirname(getActiveDocumentContext()$path)) #set file location as working directory
+
+dt <- read.csv("SpikedData.csv")
+
+Dose <- dt$N.eggs
+Cq <- dt$Cq
+nSamples <- nrow(dt)
+
+## Set seed ##
+.RNG.seed <- function(chain)
+  return( switch(chain, "1"= 1, "2"= 2) )
+.RNG.name <- function(chain)
+  return( switch(chain, "1" = "base::Super-Duper", "2" = "base::Wichmann-Hill") )
+
+
+k <- 0.01
+tau <- 1
+
+## Build a model
+m <- "model{
+  for (n in 1:nSamples){
+    Cq[n] ~ dnorm(mu[n],tau)
+    mu[n] <- (39-Cq0) / (1 + exp(k*(Dose[n]-x0))) + Cq0
+  }
+  
+  tau ~ dgamma(0.001,0.001)
+  k1 ~ dpar(1,1)T(,1.1)
+  k <- k1-1
+  x0 ~ dunif(0,200)
+  Cq0 ~ dunif(18,22.26)
+  
+  #inits# .RNG.seed, .RNG.name, tau
+  #data# nSamples, Cq, Dose
+  #monitor# tau, k, Cq0, x0
+}"
+
+### Run model ###
+NoiseSpiked <- run.jags(m, burnin=5000, sample=1000, thin=10, n.chains=2, jags.refresh = 1, method = 'parallel',
+                        plots = F, silent.jags = F)
+
+plot(NoiseSpiked)
+
+## Save image with results, currently commented to avoid accidental overwriting
+#save.image("SpikedResults.RData")
+
+###############################################################
+
+## Analysis
+## Load data and set working directory
+library(rstudioapi)
+library(runjags)
+setwd(dirname(getActiveDocumentContext()$path)) #set file location as working directory
+load("SpikedResults.RData")
+
+
+set.seed(1)
+
+Cq0 <- c(NoiseSpiked$mcmc[[1]][,"Cq0"],NoiseSpiked$mcmc[[2]][,"Cq0"])
+k <- c(NoiseSpiked$mcmc[[1]][,"k"],NoiseSpiked$mcmc[[2]][,"k"])
+x0 <- c(NoiseSpiked$mcmc[[1]][,"x0"],NoiseSpiked$mcmc[[2]][,"x0"])
+n <- length(Cq0) #number of samples
+
+x <- 1:200
+
+LogC <- sapply(1:n,function(y){
+  (39-Cq0[y]) / (1 + exp(k[y]*(x-x0[y]))) + Cq0[y]
+})
+
+#### Quick plot to check the fit ####
+library(scales) #use the alpha function to add transparency
+plot(NA,xlim = c(0,200), ylim = c(20,40))
+points(dt$N.eggs,dt$Cq,pch = 19)
+
+for (i in 1:n){
+  lines(x,LogC[,i], col = alpha("red",.1))
+}
+###############
+
+larvaedt <- read.csv("LarvatedEggsCqData.csv")
+
+set.seed(1)
+## Generate my two ref Cq vals for larvae
+refCqL <- rnorm(2,mean=larvaedt$Mean.Cq,sd=larvaedt$SD..triplicate.)
+
+## Sample the values for the red curve that we are going to compare
+Pos <- sample.int(n,1)
+compCqEgg <- LogC[larvaedt$No..larvated.eggs,Pos]
+
+## The shift is simply the average difference between both
+shift <- mean(compCqEgg-refCqL)
+
+## Quick plot check
+plot(NA,xlim = c(0,200), ylim = c(10,40))
+lines(LogC[,Pos], col = "red")
+lines(LogC[,Pos]-shift, col = "green")
+
+## Test
+fieldval <- 24
+
+errors <- c(sqrt(((LogC[,Pos]-fieldval)/sd(LogC[,Pos]))^2),
+          sqrt(((LogC[,Pos]-shift-fieldval)/sd(LogC[,Pos]-shift))^2))
+
+prop<-25/400
+th <- quantile(errors,probs=prop)
+errors[errors>th] <- NA
+
+weight<-(1/th)*(1-(errors/th)^2)
+weight[is.na(weight)] <- 0
+
+hist(sample(1:400,1000,prob = weight, replace = T))
+
