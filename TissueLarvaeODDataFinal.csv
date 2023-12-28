@@ -1,0 +1,24 @@
+Species,Neggs,mLarvae,SDLarvae,Tissue,Days,OD,Reference
+MOUSE,1000,20.2,6.3,Liver,45,1.5,Quintana de Moura et al (2020)
+MOUSE,500,2.5,0.9,Liver,45,1.8,
+MOUSE,250,1.5,0.5,Liver,45,2,
+MOUSE,100,0.2,0.4,Liver,45,1.3,
+MOUSE,50,0,0,Liver,45,0.6,
+PIG,60000,6.56,,Liver,14,2.8,Helwigh et al. (1999)
+PIG,60000,6.53,,Liver,28,3,
+MOUSE,1000,0.5,,Liver,70,2.8,Havasiova-Reitereva et al (1995)
+MOUSE,1000,260.8,,Muscle,70,2.8,
+MOUSE,300,2.8,2.16,Liver,120,0.6,Loscano et al (2015)
+MOUSE,300,59,11.59,Muscle,120,0.6,
+GERBIL,1000,130,,Liver,5,0.03,Alba-Hurtado et al (2009)
+GERBIL,1000,0,,Muscle,5,0.03, 
+GERBIL,1000,100,,Liver,10,0.3,
+GERBIL,1000,400,,Muscle,10,0.3,
+GERBIL,1000,80,,Liver,20,0.8,
+GERBIL,1000,540,,Muscle,20,0.8,
+GERBIL,1000,0,,Liver,30,1,
+GERBIL,1000,600,,Muscle,30,1,
+GERBIL,1000,0,,Liver,40,1.1,
+GERBIL,1000,680,,Muscle,40,1.1,
+GERBIL,1000,0,,Liver,60,1, 
+GERBIL,1000,550,,Muscle,60,1,
