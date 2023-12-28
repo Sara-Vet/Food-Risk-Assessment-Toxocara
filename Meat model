@@ -1,0 +1,286 @@
+MeatModelFunctions.R
+## MeatModelFunctions
+library(rstudioapi)
+setwd(dirname(getActiveDocumentContext()$path)) #set file location as working directory
+
+## Load Data Needed
+dtOD <- read.csv("MeatODData.csv") ## Loading the Lab results
+
+dtODPig <- subset(dtOD, dtOD$SPECIES == "PIG")
+dtODCow <- subset(dtOD, dtOD$SPECIES == "COW")
+dtODSheep <- subset(dtOD, dtOD$SPECIES == "SHEEP")
+
+MeatIntake <- data.frame("SPECIES" = c("SHEEP","COW","PIG"), 
+                         "VOL" = c(15,122,207)) ## Data from AHDB
+
+## Probabilities for each meat
+MeatIntake$PROB <- MeatIntake$VOL/sum(MeatIntake$VOL) 
+
+## Get OD function
+getOD <- function(N){
+  MeatOD <- rep(NA,N)
+  for (i in 1:N){
+    if(MeatSpecies[i]=="PIG"){
+      MeatOD[i] <- sample(dtODPig$OD,1)
+    } else if(MeatSpecies[i]=="COW"){
+      MeatOD[i] <- sample(dtODCow$OD,1)
+    } else {
+      MeatOD[i] <- sample(dtODSheep$OD,1)
+    }
+  }
+  return(MeatOD)
+}
+
+## Generate logistic function lavae vs OD
+load("LogicFunc.RData")
+
+set.seed(1)
+k <- c(logicFuncFit$mcmc[[1]][,"k"],logicFuncFit$mcmc[[2]][,"k"])
+x0 <- c(logicFuncFit$mcmc[[1]][,"x0"],logicFuncFit$mcmc[[2]][,"x0"])
+n <- length(k) #number of samples
+
+x <- 1:100
+
+LogC <- sapply(1:n,function(y){
+  2 / (1 + exp(-k[y]*(x-x0[y])))
+})
+
+## Get number of infected larvae in animal
+getNInf <- function(fieldval){
+  ## Sample the values for the red curve that we are going to choose
+  Pos <- sample.int(n,1)
+  
+  ## calculate error against the field value (OD)
+  errors <- sqrt(((LogC[,Pos]-fieldval)/sd(LogC[,Pos]))^2)
+  
+  ## keep top 10 smallest error 
+  prop<-10/100
+  th <- quantile(errors,probs=prop)
+  errors[errors>th] <- NA
+  
+  ## Set weights
+  weight<-(1/th)*(1-(errors/th)^2)
+  weight[is.na(weight)] <- 0
+  
+  ## sample 1 value based on the weights
+ return(sample(1:100,1,prob = weight, replace = T))
+}
+
+### Meat portion calculation
+dtmeatpor <- read.csv("MeatPortionData.csv")
+
+getPortion <- function(MeatSpecies){
+  Portion <- rep(0,length(MeatSpecies))
+  Portion[MeatSpecies=="COW"] <- sum(dtmeatpor$TOTAL.PORTIONS[which(dtmeatpor$SPECIES=="COW")])
+  Portion[MeatSpecies=="SHEEP"] <- sum(dtmeatpor$TOTAL.PORTIONS[which(dtmeatpor$SPECIES=="SHEEP")])
+  Portion[MeatSpecies=="PIG"] <- sum(dtmeatpor$TOTAL.PORTIONS[which(dtmeatpor$SPECIES=="PIG")])
+  return(Portion)
+}
+
+## Fit of dose-response part
+doserespdt <- read.csv("DoseResponseMiceData.csv")
+
+doseResponseModel <- function(rate){
+  sum((doserespdt$X..infected.1/100 - (1 - exp(-rate*doserespdt$Dose..eggs.)))^2)
+}
+
+opres <- optim(c(0.5),doseResponseModel, method = "Brent", lower = 0, upper = 1)
+
+
+ModelScript.R
+#################
+library(rstudioapi)
+setwd(dirname(getActiveDocumentContext()$path)) #set file location as working directory
+source("MeatModelFunctions.R")
+library(stringr)
+
+### Define the scenario
+## 1 person eating 1 meat portion per day for 1 year (365 days)
+nRepeats = 2000
+
+N <- 1000
+
+rsInf <- sapply(1:nRepeats, function(x){
+  
+  ## Which species are being eaten each day
+  MeatSpecies <- sample(MeatIntake$SPECIES,N,replace=T,prob = MeatIntake$PROB)
+  
+  ## Get OD value for each portion
+  MeatOD <- getOD(N)
+  
+  ## Get nLarvae from OD/Neggs/Nlarvae in tissue
+  nInfTissue <- sapply(MeatOD,getNInf)
+  
+  ## Get nLarve in the portion based on the mean Larvae in the animal
+  ## nPortions from an animal
+  nInfmeat <- rpois(N,nInfTissue/getPortion(MeatSpecies))
+  nInfM <- ifelse(nInfmeat <= 0, "negative", "positive")
+  
+  
+  ## Compute prob of infect humans
+  ## Using exponential dose-response
+  nInfHumans <- rbinom(nInf,1,1-exp(-opres$par*nInf)) 
+  return(c(sum(nInfmeat),sum(nInfHumans)))
+})
+
+PreAnalysis.R
+## MeatModel Pre Analysis
+library(rstudioapi)
+library(runjags)
+setwd(dirname(getActiveDocumentContext()$path)) #set file location as working directory
+
+### All OD data available
+dtlarvaOD <- read.csv("TissueLarvaeODDataFinal.csv", stringsAsFactors = T)
+
+### Lescano data to get variation in OD for a given inf egg dosage
+dtlarvaOD2 <- read.csv("LescanoMiceData.csv")
+
+library(fitdistrplus)
+noisest <- fitdist(c(na.omit(dtlarvaOD2$OD)),"norm")
+
+### Lescano data to look at the proportion of larvae in muscle and liver given 
+### a dosage
+OD <- dtlarvaOD2$OD
+nEggs <- dtlarvaOD2$EGG.INF.DOSE
+larvae <- rowSums(dtlarvaOD2[,3:4])
+Ml <- dtlarvaOD2$LARVAE.MUSCLE
+Ll <- dtlarvaOD2$LARVAE.LIVER
+N <- nrow(dtlarvaOD2)
+
+library(runjags)
+## Set seed ##
+.RNG.seed <- function(chain)
+  return( switch(chain, "1"= 1, "2"= 2) )
+.RNG.name <- function(chain)
+  return( switch(chain, "1" = "base::Super-Duper", "2" = "base::Wichmann-Hill") )
+
+## Model to estimate proportion of larvae that establish in muscle and liver
+m <- "model{
+  for (n in 1:N){
+    Ml[n] ~ dpois(lambdaM*nEggs[n])
+    Ll[n] ~ dpois(lambdaL*nEggs[n])
+  }
+  
+  ## Priors ##
+  lambdaM ~ dbeta(1,1)
+  lambdaL ~ dbeta(1,1)
+  
+  #inits# .RNG.seed, .RNG.name
+  #data# N, nEggs, Ml, Ll
+  #monitor# lambdaM, lambdaL
+}"
+
+### Run model ###
+proptoTissues <- run.jags(m, burnin=5000, sample=1000, thin=10, n.chains=2, jags.refresh = 1, method = 'parallel',
+                          plots = F, silent.jags = F)
+
+summary(proptoTissues)
+
+##################
+### From Quintana we estimate larvae in muscle from larvae in tissue
+dts <- dtlarvaOD[1:5,]
+
+## calculate larvae in the liver
+set.seed(1)
+nRep <- 100
+nLarvae <- rnorm(nRep*nrow(dts),mean = dts$mLarvae,sd=dts$SDLarvae)
+nLarvae[nLarvae<0] <- 0
+nLarvae <- round(nLarvae,0)
+nLarvaeL <- nLarvae
+nLarvae[nLarvae==0] <- 0.1 ## To correct for the fact that no larvae in the liver
+# does not mean that there are no larvae in the muscle 
+
+## calculate larvae in the muscle
+lambdaM <- c(portion$mcmc[[1]][,"lambdaM"],proptoTissues$mcmc[[2]][,"lambdaM"])
+lambdaL <- c(proptoTissues$mcmc[[1]][,"lambdaL"],proptoTissues$mcmc[[2]][,"lambdaL"])
+
+IDs <- sample.int(length(lambdaL),nRep*nrow(dts))
+
+nLarvaeM <- rpois(nRep*nrow(dts),nLarvae*lambdaM[IDs]/lambdaL[IDs])
+
+## The OD for those larvae numbers
+OD <- rep(dts$OD,nRep)
+totalLarvae <- rowSums(cbind(nLarvaeL,nLarvaeM))
+nSamples <- nRep*nrow(dts)
+tau <- 1/(noisest$estimate[2])^2
+
+#### Logistic function fit to link OD to larvae in Tissue
+library(runjags)
+## Set seed ##
+.RNG.seed <- function(chain)
+  return( switch(chain, "1"= 1, "2"= 2) )
+.RNG.name <- function(chain)
+  return( switch(chain, "1" = "base::Super-Duper", "2" = "base::Wichmann-Hill") )
+
+## Build a model
+m <- "model{
+  for (n in 1:nSamples){
+    OD[n] ~ dnorm(mu[n],tau)
+    mu[n] <- 2 / (1 + exp(-k*(totalLarvae[n]-x0)))
+  }
+  
+  k1 ~ dpar(1,1)
+  k <- k1-1
+  x0 ~ dnorm(0,10^-6)
+  
+  #inits# .RNG.seed, .RNG.name,
+  #data# nSamples, OD, totalLarvae, tau
+  #monitor# k, x0
+}"
+
+### Run model ###
+logicFuncFit <- run.jags(m, burnin=5000, sample=1000, thin=10, n.chains=2, jags.refresh = 1, method = 'parallel',
+                         plots = F, silent.jags = F)
+
+plot(logicFuncFit)
+
+save.image("LogicFunc.RData")
+#########################
+
+##########################
+## Analyse results from above
+## Load data and set working directory
+library(rstudioapi)
+library(runjags)
+setwd(dirname(getActiveDocumentContext()$path)) #set file location as working directory
+load("LogicFunc.RData")
+
+set.seed(1)
+
+k <- c(logicFuncFit$mcmc[[1]][,"k"],logicFuncFit$mcmc[[2]][,"k"])
+x0 <- c(logicFuncFit$mcmc[[1]][,"x0"],logicFuncFit$mcmc[[2]][,"x0"])
+n <- length(k) #number of samples
+
+x <- 1:100
+
+LogC <- sapply(1:n,function(y){
+  2 / (1 + exp(-k[y]*(x-x0[y])))
+})
+
+#### Quick plot to check the fit ####
+library(scales) #use the alpha function to add transparency
+plot(NA,xlim = c(0,100), ylim = c(0,2))
+points(totalLarvae,OD,pch = 19)
+
+for (i in 1:n){
+  lines(x,LogC[,i], col = alpha("red",.1))
+}
+###############
+
+## Test
+fieldval <- 1.5
+
+## Sample the values for the red curve that we are going to choose
+Pos <- sample.int(n,1)
+
+errors <- sqrt(((LogC[,Pos]-fieldval)/sd(LogC[,Pos]))^2)
+
+prop<-10/100
+th <- quantile(errors,probs=prop)
+errors[errors>th] <- NA
+
+weight<-(1/th)*(1-(errors/th)^2)
+weight[is.na(weight)] <- 0
+
+hist(sample(1:100,1000,prob = weight, replace = T))
+
